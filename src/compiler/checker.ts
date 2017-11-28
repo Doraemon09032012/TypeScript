@@ -18043,8 +18043,10 @@ namespace ts {
                         }
                         if (!getEffectiveReturnTypeNode(node) && !signature.resolvedReturnType) {
                             const returnType = getReturnTypeFromBody(node, checkMode);
+                            const contextualReturnType = getReturnTypeFromContext(<FunctionExpression>node);
                             if (!signature.resolvedReturnType) {
-                                signature.resolvedReturnType = returnType;
+                                const x = checkTypeAssignableTo(returnType, contextualReturnType, undefined);
+                                signature.resolvedReturnType = node.kind !== SyntaxKind.MethodDeclaration &&  contextualReturnType !== unknownType && x ? contextualReturnType : returnType;
                             }
                         }
                     }
@@ -18060,6 +18062,27 @@ namespace ts {
             }
 
             return type;
+        }
+
+        function getReturnTypeFromContext(node: FunctionExpression) {
+            const contextualType = getContextualType(<FunctionExpression>node.parent);
+
+            if (!contextualType) {
+                return unknownType;
+            }
+
+            const instantiatedType = instantiateType(contextualType, cloneTypeMapper(getContextualMapper(node.parent)));
+            const contextualSignature = getSingleCallSignature(instantiatedType);
+            const contextualTypeOfParent = contextualSignature && contextualSignature.typeParameters ?
+                getOrCreateTypeFromSignature(getSignatureInstantiation(contextualSignature, contextualSignature.typeParameters, isInJavaScriptFile(node.parent))) :
+                instantiatedType;
+            const parentExpression = (<CallExpression>node.parent).expression;
+            // if (parentExpression && parentExpression.kind === SyntaxKind.PropertyAccessExpression && (<PropertyAccessExpression>parentExpression).expression.kind === SyntaxKind.ArrayLiteralExpression) {
+                if (parentExpression && parentExpression.kind === SyntaxKind.PropertyAccessExpression && (<TypeReference>contextualTypeOfParent).typeArguments) {
+                return (<TypeReference>contextualTypeOfParent).typeArguments[0];
+            }
+
+            return unknownType;
         }
 
         function checkFunctionExpressionOrObjectLiteralMethodDeferred(node: ArrowFunction | FunctionExpression | MethodDeclaration) {
