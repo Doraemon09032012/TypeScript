@@ -14594,6 +14594,194 @@ namespace ts {
             }
         }
 
+        function checkObjectLiteral2(node: ObjectLiteralExpression, checkMode?: CheckMode): Type {
+            const inDestructuringPattern = isAssignmentTarget(node);
+            // Grammar checking
+            checkGrammarObjectLiteralExpression(node, inDestructuringPattern);
+
+            let propertiesTable = createSymbolTable();
+            let propertiesArray: Symbol[] = [];
+            let spread: Type = emptyObjectType;
+            let propagatedFlags: TypeFlags = 0;
+
+            const contextualType = getApparentTypeOfContextualType(node);
+            const contextualTypeHasPattern = contextualType && contextualType.pattern &&
+                (contextualType.pattern.kind === SyntaxKind.ObjectBindingPattern || contextualType.pattern.kind === SyntaxKind.ObjectLiteralExpression);
+            const isJSObjectLiteral = !contextualType && isInJavaScriptFile(node);
+            let typeFlags: TypeFlags = 0;
+            let patternWithComputedProperties = false;
+            let hasComputedStringProperty = false;
+            let hasComputedNumberProperty = false;
+            const isInJSFile = isInJavaScriptFile(node);
+
+            let offset = 0;
+            for (let i = 0; i < node.properties.length; i++) {
+                const memberDecl = node.properties[i];
+                let member = getSymbolOfNode(memberDecl);
+                let literalName: __String | undefined;
+                if (memberDecl.kind === SyntaxKind.PropertyAssignment ||
+                    memberDecl.kind === SyntaxKind.ShorthandPropertyAssignment ||
+                    isObjectLiteralMethod(memberDecl)) {
+                    let jsdocType: Type;
+                    if (isInJSFile) {
+                        jsdocType = getTypeForDeclarationFromJSDocComment(memberDecl);
+                    }
+
+                    let type: Type;
+                    if (memberDecl.kind === SyntaxKind.PropertyAssignment) {
+                        if (memberDecl.name.kind === SyntaxKind.ComputedPropertyName) {
+                            const t = checkComputedPropertyName(<ComputedPropertyName>memberDecl.name);
+                            if (t.flags & TypeFlags.Literal) {
+                                literalName = escapeLeadingUnderscores("" + (t as LiteralType).value);
+                            }
+                        }
+                        type = checkPropertyAssignment2(<PropertyAssignment>memberDecl, checkMode);
+                    }
+                    else if (memberDecl.kind === SyntaxKind.MethodDeclaration) {
+                        type = checkObjectLiteralMethod(<MethodDeclaration>memberDecl, checkMode);
+                    }
+                    else {
+                        Debug.assert(memberDecl.kind === SyntaxKind.ShorthandPropertyAssignment);
+                        type = checkExpressionForMutableLocation((<ShorthandPropertyAssignment>memberDecl).name, checkMode);
+                    }
+
+                    if (jsdocType) {
+                        checkTypeAssignableTo(type, jsdocType, memberDecl);
+                        type = jsdocType;
+                    }
+
+                    typeFlags |= type.flags;
+
+                    const nameType = hasLateBindableName(memberDecl) ? checkComputedPropertyName(memberDecl.name) : undefined;
+                    const prop = nameType && isTypeUsableAsLateBoundName(nameType)
+                        ? createSymbol(SymbolFlags.Property | member.flags, getLateBoundNameFromType(nameType), CheckFlags.Late)
+                        : createSymbol(SymbolFlags.Property | member.flags, literalName || member.escapedName);
+
+                    if (inDestructuringPattern) {
+                        // If object literal is an assignment pattern and if the assignment pattern specifies a default value
+                        // for the property, make the property optional.
+                        const isOptional =
+                            (memberDecl.kind === SyntaxKind.PropertyAssignment && hasDefaultValue((<PropertyAssignment>memberDecl).initializer)) ||
+                            (memberDecl.kind === SyntaxKind.ShorthandPropertyAssignment && (<ShorthandPropertyAssignment>memberDecl).objectAssignmentInitializer);
+                        if (isOptional) {
+                            prop.flags |= SymbolFlags.Optional;
+                        }
+                        if (!literalName && hasDynamicName(memberDecl)) {
+                            patternWithComputedProperties = true;
+                        }
+                    }
+                    else if (contextualTypeHasPattern && !(getObjectFlags(contextualType) & ObjectFlags.ObjectLiteralPatternWithComputedProperties)) {
+                        // If object literal is contextually typed by the implied type of a binding pattern, and if the
+                        // binding pattern specifies a default value for the property, make the property optional.
+                        const impliedProp = getPropertyOfType(contextualType, member.escapedName);
+                        if (impliedProp) {
+                            prop.flags |= impliedProp.flags & SymbolFlags.Optional;
+                        }
+
+                        else if (!compilerOptions.suppressExcessPropertyErrors && !getIndexInfoOfType(contextualType, IndexKind.String)) {
+                            error(memberDecl.name, Diagnostics.Object_literal_may_only_specify_known_properties_and_0_does_not_exist_in_type_1,
+                                symbolToString(member), typeToString(contextualType));
+                        }
+                    }
+                    prop.declarations = member.declarations;
+                    prop.parent = member.parent;
+                    if (member.valueDeclaration) {
+                        prop.valueDeclaration = member.valueDeclaration;
+                    }
+
+                    prop.type = type;
+                    prop.target = member;
+                    member = prop;
+                }
+                else if (memberDecl.kind === SyntaxKind.SpreadAssignment) {
+                    if (languageVersion < ScriptTarget.ES2015) {
+                        checkExternalEmitHelpers(memberDecl, ExternalEmitHelpers.Assign);
+                    }
+                    if (propertiesArray.length > 0) {
+                        spread = getSpreadType(spread, createObjectLiteralType(), node.symbol, propagatedFlags);
+                        propertiesArray = [];
+                        propertiesTable = createSymbolTable();
+                        hasComputedStringProperty = false;
+                        hasComputedNumberProperty = false;
+                        typeFlags = 0;
+                    }
+                    const type = checkExpression((memberDecl as SpreadAssignment).expression);
+                    if (!isValidSpreadType(type)) {
+                        error(memberDecl, Diagnostics.Spread_types_may_only_be_created_from_object_types);
+                        return unknownType;
+                    }
+                    spread = getSpreadType(spread, type, node.symbol, propagatedFlags);
+                    offset = i + 1;
+                    continue;
+                }
+                else {
+                    // TypeScript 1.0 spec (April 2014)
+                    // A get accessor declaration is processed in the same manner as
+                    // an ordinary function declaration(section 6.1) with no parameters.
+                    // A set accessor declaration is processed in the same manner
+                    // as an ordinary function declaration with a single parameter and a Void return type.
+                    Debug.assert(memberDecl.kind === SyntaxKind.GetAccessor || memberDecl.kind === SyntaxKind.SetAccessor);
+                    checkNodeDeferred(memberDecl);
+                }
+
+                if (!literalName && hasNonBindableDynamicName(memberDecl)) {
+                    if (isNumericName(memberDecl.name)) {
+                        hasComputedNumberProperty = true;
+                    }
+                    else {
+                        hasComputedStringProperty = true;
+                    }
+                }
+                else {
+                    propertiesTable.set(member.escapedName, member);
+                }
+                propertiesArray.push(member);
+            }
+
+            // If object literal is contextually typed by the implied type of a binding pattern, augment the result
+            // type with those properties for which the binding pattern specifies a default value.
+            if (contextualTypeHasPattern) {
+                for (const prop of getPropertiesOfType(contextualType)) {
+                    if (!propertiesTable.get(prop.escapedName) && !(spread && getPropertyOfType(spread, prop.escapedName))) {
+                        if (!(prop.flags & SymbolFlags.Optional)) {
+                            error(prop.valueDeclaration || (<TransientSymbol>prop).bindingElement,
+                                Diagnostics.Initializer_provides_no_value_for_this_binding_element_and_the_binding_element_has_no_default_value);
+                        }
+                        propertiesTable.set(prop.escapedName, prop);
+                        propertiesArray.push(prop);
+                    }
+                }
+            }
+
+            if (spread !== emptyObjectType) {
+                if (propertiesArray.length > 0) {
+                    spread = getSpreadType(spread, createObjectLiteralType(), node.symbol, propagatedFlags);
+                }
+                return spread;
+            }
+
+            return createObjectLiteralType();
+
+            function createObjectLiteralType() {
+                const stringIndexInfo = isJSObjectLiteral ? jsObjectLiteralIndexInfo : hasComputedStringProperty ? getObjectLiteralIndexInfo(node.properties, offset, propertiesArray, IndexKind.String) : undefined;
+                const numberIndexInfo = hasComputedNumberProperty && !isJSObjectLiteral ? getObjectLiteralIndexInfo(node.properties, offset, propertiesArray, IndexKind.Number) : undefined;
+                const result = createAnonymousType(node.symbol, propertiesTable, emptyArray, emptyArray, stringIndexInfo, numberIndexInfo);
+                const freshObjectLiteralFlag = compilerOptions.suppressExcessPropertyErrors ? 0 : TypeFlags.FreshLiteral;
+                result.flags |= TypeFlags.ContainsObjectLiteral | freshObjectLiteralFlag | (typeFlags & TypeFlags.PropagatingFlags);
+                result.objectFlags |= ObjectFlags.ObjectLiteral;
+                if (patternWithComputedProperties) {
+                    result.objectFlags |= ObjectFlags.ObjectLiteralPatternWithComputedProperties;
+                }
+                if (inDestructuringPattern) {
+                    result.pattern = node;
+                }
+                if (!(result.flags & TypeFlags.Nullable)) {
+                    propagatedFlags |= (result.flags & TypeFlags.PropagatingFlags);
+                }
+                return result;
+            }
+        }
+
         function isValidSpreadType(type: Type): boolean {
             return !!(type.flags & (TypeFlags.Any | TypeFlags.NonPrimitive) ||
                 getFalsyFlags(type) & TypeFlags.DefinitelyFalsy && isValidSpreadType(removeDefinitelyFalsyTypes(type)) ||
@@ -18042,11 +18230,41 @@ namespace ts {
                             assignContextualParameterTypes(signature, instantiatedContextualSignature);
                         }
                         if (!getEffectiveReturnTypeNode(node) && !signature.resolvedReturnType) {
+                            // const f = getInitialOrAssignedType;
+                            // f;
+                            // const g = getBaseTypeOfLiteralType;
+                            // g;
+                            // const h = getTypeAtFlowNode;
+                            // h;
                             const returnType = getReturnTypeFromBody(node, checkMode);
+                            const exp = (<any>(<FunctionExpression>node).body).expression;
+                            let unwidenType: Type = anyType;
+                            if (exp && exp.kind === SyntaxKind.ObjectLiteralExpression) {
+                                unwidenType = checkObjectLiteral2(exp);
+                            }
                             const contextualReturnType = getReturnTypeFromContext(<FunctionExpression>node);
                             if (!signature.resolvedReturnType) {
                                 const x = checkTypeAssignableTo(returnType, contextualReturnType, undefined);
-                                signature.resolvedReturnType = node.kind !== SyntaxKind.MethodDeclaration &&  contextualReturnType !== unknownType && x ? contextualReturnType : returnType;
+                                if (x) {
+                                    signature.resolvedReturnType = returnType;
+                                } else {
+                                    const y = checkTypeAssignableTo(unwidenType, contextualReturnType, undefined);
+                                    if (y) {
+                                        let b = (<FunctionExpression>node).body;
+                                        const links = getNodeLinks(<any>b);
+
+                                            // When computing a type that we're going to cache, we need to ignore any ongoing control flow
+                                            // analysis because variables may have transient types in indeterminable states. Moving flowLoopStart
+                                            // to the top of the stack ensures all transient types are computed from a known point.
+                                            const saveFlowLoopStart = flowLoopStart;
+                                            flowLoopStart = flowLoopCount;
+                                            links.resolvedType = unwidenType;
+                                            flowLoopStart = saveFlowLoopStart;
+
+                                        signature.resolvedReturnType = unwidenType;
+                                    }
+                                }
+                                // signature.resolvedReturnType = node.kind !== SyntaxKind.MethodDeclaration &&  contextualReturnType !== unknownType && x ? contextualReturnType : returnType;
                             }
                         }
                     }
@@ -18076,9 +18294,10 @@ namespace ts {
             const contextualTypeOfParent = contextualSignature && contextualSignature.typeParameters ?
                 getOrCreateTypeFromSignature(getSignatureInstantiation(contextualSignature, contextualSignature.typeParameters, isInJavaScriptFile(node.parent))) :
                 instantiatedType;
-            const parentExpression = (<CallExpression>node.parent).expression;
+            // const parentExpression = (<CallExpression>node.parent).expression;
             // if (parentExpression && parentExpression.kind === SyntaxKind.PropertyAccessExpression && (<PropertyAccessExpression>parentExpression).expression.kind === SyntaxKind.ArrayLiteralExpression) {
-                if (parentExpression && parentExpression.kind === SyntaxKind.PropertyAccessExpression && (<TypeReference>contextualTypeOfParent).typeArguments) {
+                // if (parentExpression && parentExpression.kind === SyntaxKind.PropertyAccessExpression && (<TypeReference>contextualTypeOfParent).typeArguments) {
+            if ((<TypeReference>contextualTypeOfParent).typeArguments) {
                 return (<TypeReference>contextualTypeOfParent).typeArguments[0];
             }
 
@@ -18989,6 +19208,11 @@ namespace ts {
                 getWidenedLiteralLikeTypeForContextualType(type, contextualType);
         }
 
+        function checkExpressionForMutableLocation2(node: Expression, checkMode: CheckMode): Type {
+            const type = checkExpression(node, checkMode);
+            return type;
+        }
+
         function checkPropertyAssignment(node: PropertyAssignment, checkMode?: CheckMode): Type {
             // Do not use hasDynamicName here, because that returns false for well known symbols.
             // We want to perform checkComputedPropertyName for all computed properties, including
@@ -18998,6 +19222,17 @@ namespace ts {
             }
 
             return checkExpressionForMutableLocation((<PropertyAssignment>node).initializer, checkMode);
+        }
+
+        function checkPropertyAssignment2(node: PropertyAssignment, checkMode?: CheckMode): Type {
+            // Do not use hasDynamicName here, because that returns false for well known symbols.
+            // We want to perform checkComputedPropertyName for all computed properties, including
+            // well known symbols.
+            if (node.name.kind === SyntaxKind.ComputedPropertyName) {
+                checkComputedPropertyName(<ComputedPropertyName>node.name);
+            }
+
+            return checkExpressionForMutableLocation2((<PropertyAssignment>node).initializer, checkMode);
         }
 
         function checkObjectLiteralMethod(node: MethodDeclaration, checkMode?: CheckMode): Type {
