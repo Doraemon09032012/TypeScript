@@ -1,0 +1,33 @@
+=== tests/cases/compiler/useReturnTypeAsInference.ts ===
+interface SmartPhone {
+>SmartPhone : SmartPhone
+
+    color: 'silver' | 'black';
+>color : "silver" | "black"
+}
+
+var a:SmartPhone[] = [];
+>a : SmartPhone[]
+>SmartPhone : SmartPhone
+>[] : undefined[]
+
+a = [1,2,3,4,5].map(v=>({color:'silver'}));
+>a = [1,2,3,4,5].map(v=>({color:'silver'})) : { color: "silver"; }[]
+>a : SmartPhone[]
+>[1,2,3,4,5].map(v=>({color:'silver'})) : { color: "silver"; }[]
+>[1,2,3,4,5].map : <U>(callbackfn: (value: number, index: number, array: number[]) => U, thisArg?: any) => U[]
+>[1,2,3,4,5] : number[]
+>1 : 1
+>2 : 2
+>3 : 3
+>4 : 4
+>5 : 5
+>map : <U>(callbackfn: (value: number, index: number, array: number[]) => U, thisArg?: any) => U[]
+>v=>({color:'silver'}) : (v: number) => { color: "silver"; }
+>v : number
+>({color:'silver'}) : { color: "silver"; }
+>{color:'silver'} : { color: "silver"; }
+>color : string
+>'silver' : "silver"
+
+

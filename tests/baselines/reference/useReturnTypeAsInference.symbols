@@ -1,0 +1,20 @@
+=== tests/cases/compiler/useReturnTypeAsInference.ts ===
+interface SmartPhone {
+>SmartPhone : Symbol(SmartPhone, Decl(useReturnTypeAsInference.ts, 0, 0))
+
+    color: 'silver' | 'black';
+>color : Symbol(SmartPhone.color, Decl(useReturnTypeAsInference.ts, 0, 22))
+}
+
+var a:SmartPhone[] = [];
+>a : Symbol(a, Decl(useReturnTypeAsInference.ts, 4, 3))
+>SmartPhone : Symbol(SmartPhone, Decl(useReturnTypeAsInference.ts, 0, 0))
+
+a = [1,2,3,4,5].map(v=>({color:'silver'}));
+>a : Symbol(a, Decl(useReturnTypeAsInference.ts, 4, 3))
+>[1,2,3,4,5].map : Symbol(Array.map, Decl(lib.d.ts, --, --))
+>map : Symbol(Array.map, Decl(lib.d.ts, --, --))
+>v : Symbol(v, Decl(useReturnTypeAsInference.ts, 5, 20))
+>color : Symbol(color, Decl(useReturnTypeAsInference.ts, 5, 25))
+
+

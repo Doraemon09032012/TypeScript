@@ -18244,13 +18244,14 @@ namespace ts {
                             }
                             const contextualReturnType = getReturnTypeFromContext(<FunctionExpression>node);
                             if (!signature.resolvedReturnType) {
-                                const x = checkTypeAssignableTo(returnType, contextualReturnType, undefined);
+                                const x = checkTypeAssignableTo(returnType, contextualReturnType, /*headMessage*/ undefined);
                                 if (x) {
                                     signature.resolvedReturnType = returnType;
-                                } else {
-                                    const y = checkTypeAssignableTo(unwidenType, contextualReturnType, undefined);
+                                }
+                                else {
+                                    const y = checkTypeAssignableTo(unwidenType, contextualReturnType, /*headMessage*/ undefined);
                                     if (y) {
-                                        let b = (<FunctionExpression>node).body;
+                                        const b = (<FunctionExpression>node).body;
                                         const links = getNodeLinks(<any>b);
 
                                             // When computing a type that we're going to cache, we need to ignore any ongoing control flow
